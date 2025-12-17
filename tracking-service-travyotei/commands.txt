@@ -1,0 +1,6 @@
+### Commands to guide me
+
+
+sudo docker compose up -d     ------>     To start containers (kafka and zookeeper, postgis containers)
+sudo docker ps               ------>     To view the running containers
+sudo docker compose down -v   ------>     To stop the running containers

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Leaflet Routing Map + WS Live Bus</title>
+    <!-- Load Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Load Leaflet Routing Machine CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
+    <style>
+        html,body { height:100%; margin:0; }
+        #map { height:90vh; width:100%; } /* Adjusted height for visibility */
+        /* Optional: Hide the routing summary box if desired */
+        .leaflet-routing-container { display: none; }
+    </style>
+</head>
+<body>
+    <h3>Live Bus Tracking on Route</h3>
+    <div id="map"></div>
+
+    <!-- Load Client Libraries (local WebJars & CDNs) -->
+    <script src="/webjars/sockjs-client/1.5.1/sockjs.min.js"></script>
+    <script src="/webjars/stomp-websocket/2.3.3/stomp.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+    
+    <script>
+        const socketUrl = '/ws';
+        const topic = '/topic/locations';
+
+        // --- 1. Define Static Start and End Points (The Route) ---
+        // Using coordinates near your previous examples (Lagos, Nigeria area)
+        const startPointCoords = [6.5244, 3.3792]; // Example Start: Lagos
+        const endPointCoords = [6.465422, 3.406085]; // Example End: Another point in Lagos
+        
+        const map = L.map('map').setView(startPointCoords, 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // --- 2. Initialize the Static Route ---
+        L.Routing.control({
+            waypoints: [
+                L.latLng(startPointCoords[0], startPointCoords[1]),
+                L.latLng(endPointCoords[0], endPointCoords[1])
+            ],
+            routeWhileDragging: false,
+            showAlternatives: false,
+            // We disable auto-markers here because we want manual markers for start/end
+            addWaypoints: false 
+        }).addTo(map);
+        
+        // --- 3. Add Custom Static Markers for Start and End (Optional, if addWaypoints: false) ---
+        L.marker(startPointCoords).addTo(map).bindPopup("Start Point");
+        L.marker(endPointCoords).addTo(map).bindPopup("End Point");
+
+
+        // --- 4. The Live Bus Marker (Dynamically updated via WebSocket) ---
+        let busMarkers = {}; // Object to hold live bus markers
+        // Vehicle routing on map click
+        let busIcon = L.icon(
+            {
+                iconUrl: '/package3.jpg',
+                iconSize: [40, 40]
+            }
+        )
+        function updateOrCreateBusMarker(busId, lat, lon, status) {
+            if (!busMarkers[busId]) {
+                // Initialize the bus marker when it first appears
+                const marker = L.marker([lat, lon],{icon: busIcon}).addTo(map);
+                marker.bindPopup(`${busId}<br>Status: ${status || 'N/A'}`);
+                busMarkers[busId] = marker;
+            } else {
+                // Update the position if the marker already exists
+                busMarkers[busId].setLatLng([lat, lon]);
+                busMarkers[busId].getPopup().setContent(`${busId}<br>Status: ${status || 'N/A'}`);
+            }
+        }
+
+        // --- 5. WebSocket Connection to receive live data ---
+        const sock = new SockJS(socketUrl);
+        const client = Stomp.over(sock);
+        client.connect({}, function(frame) {
+            console.log('Connected to STOMP', frame);
+            client.subscribe(topic, function(message) {
+                try {
+                    const body = (typeof message.body === 'string') ? JSON.parse(message.body) : message.body;
+                    console.log('Parsed payload:', body);
+
+                    // Use robust field checking as before
+                    const busId = body.bus_id || body.busId || body.bus;
+                    const lat = body.current_latitude ?? body.latitude ?? body.lat ?? body.currentLatitude;
+                    const lon = body.current_longitude ?? body.longitude ?? body.lon ?? body.currentLongitude;
+                    const status = body.current_status ?? body.status ?? body.currentStatus;
+
+                    if (busId && lat != null && lon != null) {
+                        updateOrCreateBusMarker(busId, lat, lon, status);
+                    } else {
+                        console.warn('Malformed location message received', body);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse message from WebSocket', e, message);
+                }
+            });
+        }, function(err) {
+            console.error('STOMP connection error', err);
+        });
+    </script>
+</body>
+</html>

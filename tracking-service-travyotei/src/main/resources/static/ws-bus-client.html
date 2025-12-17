@@ -1,0 +1,148 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Bus WS Sender (Route Simulator)</title>
+  <!-- Load Leaflet CSS/JS just for coordinate picking assistance -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .container { max-width: 500px; margin: 0 auto; border: 1px solid #ccc; padding: 20px; }
+    input, button { padding: 8px; margin: 5px; }
+    #status { margin-top: 20px; padding: 10px; background: #f0f0f0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h3>Bus WS Sender (simulates a bus along a route)</h3>
+    <label>Bus UUID: <input id="busId" value="11111111-1111-1111-1111-111111111111" /></label>
+    <br/>
+    <label>Send interval (ms): <input id="interval" type="number" value="1000" /></label>
+    <br/>
+    <button id="start">Start sending along route</button>
+    <button id="stop">Stop</button>
+    <div id="status">Status: Initializing route coordinates...</div>
+  </div>
+
+  <!-- Load local SockJS first (ensure these paths work in Spring Boot) -->
+  <script src="/webjars/sockjs-client/1.5.1/sockjs.min.js"></script>
+  <!-- Then load local StompJS (ensure this path works in Spring Boot) -->
+  <script src="/webjars/stomp-websocket/2.3.3/stomp.min.js"></script>
+  
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+
+  <script>
+    const socketUrl = '/ws';
+    // Send to /app/locations to hit your Spring Controller @MessageMapping
+    const sendDestination = '/topic/locations'; 
+    let stompClient = null;
+    let intervalId = null;
+    let routeCoordinates = []; // This will hold all the points along the track
+    let currentCoordIndex = 0;
+
+    // Define the start and end points for the simulator route
+    const simStart = L.latLng(6.5244, 3.3792);
+    const simEnd = L.latLng(6.465422, 3.406085);
+
+    function updateStatus(msg) {
+      document.getElementById('status').textContent = 'Status: ' + msg;
+    }
+
+    function connect(callback) {
+      // (Stomp/SockJS checks omitted for brevity, assuming libs load correctly now)
+      const sock = new SockJS(socketUrl);
+      stompClient = Stomp.over(sock);
+      stompClient.connect({}, function(frame) {
+        console.log('Connected:', frame);
+        updateStatus('Connected. Route has ' + routeCoordinates.length + ' points.');
+        if (callback) callback();
+      }, function(err) {
+        console.error('WS connect error', err);
+        updateStatus('Connection error: ' + (err.message || err));
+      });
+    }
+
+    function sendUpdate(payload) {
+      if (!stompClient || !stompClient.connected) return;
+      stompClient.send(sendDestination, {}, JSON.stringify(payload));
+      console.log('Sent coordinate ' + currentCoordIndex);
+    }
+
+    // --- Core Logic: Calculate Route and Store Coordinates ---
+    // We use a temporary map instance just to run the routing machine in the background
+    const tempMap = L.map(document.createElement('div')).setView(simStart, 13);
+
+    L.Routing.control({
+        waypoints: [simStart, simEnd],
+        autoRoute: true,
+        createMarker: function() { return null; } // Don't show markers on the temp map
+    })
+    .on('routesfound', function(e) {
+        // When the route is found, store the coordinates array
+        routeCoordinates = e.routes[0].coordinates; 
+        updateStatus('Route coordinates loaded (' + routeCoordinates.length + ' points). Ready to simulate.');
+        console.log('Stored route points:', routeCoordinates);
+    })
+    .addTo(tempMap);
+
+
+    // --- Start Button Handler ---
+    document.getElementById('start').onclick = () => {
+      if (routeCoordinates.length === 0) {
+          updateStatus('Error: Route coordinates not yet loaded.');
+          return;
+      }
+      if (!stompClient || !stompClient.connected) {
+        connect(() => startSending());
+      } else {
+        startSending();
+      }
+    };
+
+    function startSending() {
+      const busId = document.getElementById('busId').value;
+      const intervalMs = parseInt(document.getElementById('interval').value) || 1000;
+
+      if (intervalId) clearInterval(intervalId); // Stop any previous interval
+
+      updateStatus('Sending updates along route...');
+      intervalId = setInterval(() => {
+        // Get the current coordinate from the stored array
+        const currentCoord = routeCoordinates[currentCoordIndex];
+
+        const payload = {
+          bus_id: busId,
+          latitude: currentCoord.lat,
+          longitude: currentCoord.lng,
+          status: "IN_TRANSIT",
+          location: "simulated-route",
+          timestamp: new Date().toISOString()
+        };
+        
+        sendUpdate(payload);
+
+        // Move to the next point, looping back to the start if we reach the end
+        currentCoordIndex = (currentCoordIndex + 1) % routeCoordinates.length;
+
+      }, intervalMs);
+    }
+
+    // --- Stop Button Handler ---
+    document.getElementById('stop').onclick = () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+      if (stompClient) {
+        try { stompClient.disconnect(); } catch(e){}
+        stompClient = null;
+      }
+      currentCoordIndex = 0; // Reset the bus to the start
+      updateStatus('Stopped and reset.');
+    };
+  </script>
+</body>
+</html>
